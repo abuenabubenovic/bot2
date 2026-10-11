@@ -1,6 +1,6 @@
 {
   "$schema": "https://railway.com/railway.schema.json",
   "deploy": {
-    "startCommand": "node bot.js"
+    "startCommand": "node bot247.js"
   }
 }
