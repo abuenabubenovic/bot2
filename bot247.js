@@ -4,7 +4,7 @@ const { pathfinder, Movements, goals } = require('mineflayer-pathfinder');
 // ==================== НАСТРОЙКИ ====================
 const CONFIG = {
     host: 'KaboomCraft.aternos.me',
-    port: 22122,
+    port: 23722,
     username: 'CoolPlayer303',
     version: '1.21.10',
     auth: 'offline',
