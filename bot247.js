@@ -5,8 +5,8 @@ const { pathfinder, Movements, goals } = require('mineflayer-pathfinder');
 const CONFIG = {
     host: 'KaboomCraft.aternos.me',
     port: 22122,
-    username: 'LeloBot',
-    version: '26.2',
+    username: 'CoolPlayer303',
+    version: '1.21.10',
     auth: 'offline',
 
     wanderMinDist: 15,      // мин. расстояние до случайной точки
