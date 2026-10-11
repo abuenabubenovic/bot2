@@ -9,128 +9,165 @@ const CONFIG = {
     version: '1.21.10',
     auth: 'offline',
 
-    wanderMinDist: 15,      // мин. расстояние до случайной точки
-    wanderMaxDist: 60,      // макс. расстояние до случайной точки
-    wanderDelay: 2000,      // пауза между прогулками (мс)
-    stuckTimeout: 15000     // если бот не может дойти за 15 сек — выбрать новую точку
-};
+    wanderMinDist: 15,
+    wanderMaxDist: 60,
+    wanderDelay: 2000,
+    stuckTimeout: 15000,
 
+    // === ПОДКЛЮЧЕНИЕ ===
+    checkTimeoutInterval: 300 * 1000,  // 5 минут вместо 30 секунд
+    reconnectDelay: 15000              // переподключение через 15 секунд
+};
 // ===================================================
 
-const bot = mineflayer.createBot({
-    host: CONFIG.host,
-    port: CONFIG.port,
-    username: CONFIG.username,
-    version: CONFIG.version,
-    auth: CONFIG.auth
-});
+let bot = null;
+let reconnectTimer = null;
 
-bot.loadPlugin(pathfinder);
+// === СОЗДАНИЕ БОТА ===
+function createNewBot() {
+    console.log('[*] Создаю бота...');
 
-// === ПАТЧ ПРОТИВ GRIMAC ===
-bot.on('physicsTick', () => {
-    try { bot._client.write('tick_end', {}); } catch (e) {}
-});
+    bot = mineflayer.createBot({
+        host: CONFIG.host,
+        port: CONFIG.port,
+        username: CONFIG.username,
+        version: CONFIG.version,
+        auth: CONFIG.auth,
+        checkTimeoutInterval: CONFIG.checkTimeoutInterval
+    });
 
-// === СОСТОЯНИЕ ===
-let wandering = false;
-let currentGoal = null;
+    bot.loadPlugin(pathfinder);
 
-// === ПОИСК СЛУЧАЙНОЙ ТОЧКИ ===
-function getRandomPoint() {
-    const pos = bot.entity.position;
-    const angle = Math.random() * Math.PI * 2;
-    const dist = CONFIG.wanderMinDist +
-        Math.random() * (CONFIG.wanderMaxDist - CONFIG.wanderMinDist);
+    // === ПАТЧ ПРОТИВ GRIMAC ===
+    bot.on('physicsTick', () => {
+        try { bot._client.write('tick_end', {}); } catch (e) {}
+    });
 
-    const x = Math.floor(pos.x + Math.cos(angle) * dist);
-    const z = Math.floor(pos.z + Math.sin(angle) * dist);
-    const y = Math.floor(pos.y);
+    // === СОСТОЯНИЕ ===
+    let wandering = false;
+    let currentGoal = null;
 
-    return new goals.GoalBlock(x, y, z);
-}
+    // === ПОИСК СЛУЧАЙНОЙ ТОЧКИ ===
+    function getRandomPoint() {
+        const pos = bot.entity.position;
+        const angle = Math.random() * Math.PI * 2;
+        const dist = CONFIG.wanderMinDist +
+            Math.random() * (CONFIG.wanderMaxDist - CONFIG.wanderMinDist);
 
-// === ГЛАВНАЯ ЛОГИКА ===
-bot.once('spawn', () => {
-    console.log(`[+] Бот ${CONFIG.username} подключился.`);
+        const x = Math.floor(pos.x + Math.cos(angle) * dist);
+        const z = Math.floor(pos.z + Math.sin(angle) * dist);
+        const y = Math.floor(pos.y);
 
-    const defaultMove = new Movements(bot);
-    defaultMove.canDig = false;           // не ломает блоки
-    defaultMove.allow1by1towers = false;  // не строит башни
-    defaultMove.allowParkour = true;      // разрешаем прыжки через ямы
-    defaultMove.allowSprinting = true;    // разрешаем спринт
-    bot.pathfinder.setMovements(defaultMove);
+        return new goals.GoalBlock(x, y, z);
+    }
 
-    startWandering();
-});
+    // === ГЛАВНАЯ ЛОГИКА ===
+    bot.once('spawn', () => {
+        console.log(`[+] Бот ${CONFIG.username} подключился.`);
 
-async function startWandering() {
-    while (true) {
-        try {
-            // Если уже куда-то идём — ждём
-            if (bot.pathfinder.isMoving()) {
-                await new Promise(r => setTimeout(r, 1000));
-                continue;
+        const defaultMove = new Movements(bot);
+        defaultMove.canDig = false;
+        defaultMove.allow1by1towers = false;
+        defaultMove.allowParkour = true;
+        defaultMove.allowSprinting = true;
+        bot.pathfinder.setMovements(defaultMove);
+
+        startWandering();
+    });
+
+    async function startWandering() {
+        while (true) {
+            // Если бот отключился — выходим из цикла
+            if (!bot || !bot.entity) {
+                console.log('[!] Бот отключён, выходим из цикла прогулки.');
+                return;
             }
-
-            const goal = getRandomPoint();
-            currentGoal = goal;
-            wandering = true;
-
-            const target = goal.position || goal;
-            console.log(`[🚶] Иду в точку (${target.x}, ${target.y}, ${target.z})`);
-
-            // Таймаут на путь
-            const timeout = setTimeout(() => {
-                if (wandering) {
-                    console.log('[!] Не могу дойти, выбираю новую точку.');
-                    bot.pathfinder.setGoal(null);
-                    wandering = false;
-                }
-            }, CONFIG.stuckTimeout);
 
             try {
-                await bot.pathfinder.goto(goal);
-                clearTimeout(timeout);
-                console.log('[✓] Дошёл!');
+                if (bot.pathfinder.isMoving()) {
+                    await new Promise(r => setTimeout(r, 1000));
+                    continue;
+                }
+
+                const goal = getRandomPoint();
+                currentGoal = goal;
+                wandering = true;
+
+                const target = goal.position || goal;
+                console.log(`[🚶] Иду в точку (${target.x}, ${target.y}, ${target.z})`);
+
+                const timeout = setTimeout(() => {
+                    if (wandering) {
+                        console.log('[!] Не могу дойти, выбираю новую точку.');
+                        try { bot.pathfinder.setGoal(null); } catch (e) {}
+                        wandering = false;
+                    }
+                }, CONFIG.stuckTimeout);
+
+                try {
+                    await bot.pathfinder.goto(goal);
+                    clearTimeout(timeout);
+                    console.log('[✓] Дошёл!');
+                } catch (e) {
+                    clearTimeout(timeout);
+                    console.log('[!] Путь не найден, выбираю новую точку.');
+                }
+
+                wandering = false;
+                currentGoal = null;
+
+                await new Promise(r => setTimeout(r, CONFIG.wanderDelay));
+
             } catch (e) {
-                clearTimeout(timeout);
-                console.log('[!] Путь не найден, выбираю новую точку.');
+                console.log('[!] Ошибка в цикле:', e.message);
+                wandering = false;
+                await new Promise(r => setTimeout(r, 2000));
             }
-
-            wandering = false;
-            currentGoal = null;
-
-            // Пауза перед следующей прогулкой
-            await new Promise(r => setTimeout(r, CONFIG.wanderDelay));
-
-        } catch (e) {
-            console.log('[!] Ошибка в цикле:', e.message);
-            wandering = false;
-            await new Promise(r => setTimeout(r, 2000));
         }
     }
+
+    // === СОБЫТИЯ ===
+    bot.on('path_update', (r) => {
+        if (r.status === 'noPath') {
+            console.log('[!] Нет пути — выбираю новую точку.');
+            if (wandering) {
+                try { bot.pathfinder.setGoal(null); } catch (e) {}
+                wandering = false;
+            }
+        }
+    });
+
+    bot.on('error', (err) => console.log('[!] Ошибка:', err.message));
+
+    bot.on('kicked', (reason) => {
+        console.log(`[!] Бота выкинули. Причина: ${reason}`);
+    });
+
+    bot.on('end', (reason) => {
+        console.log(`[!] Соединение потеряно. Причина: ${reason || 'неизвестна'}`);
+        scheduleReconnect();
+    });
+
+    bot.on('resourcePack', () => bot.acceptResourcePack());
 }
 
-// === СОБЫТИЯ ===
-bot.on('path_update', (r) => {
-    if (r.status === 'noPath') {
-        console.log('[!] Нет пути — выбираю новую точку.');
-        if (wandering) {
-            bot.pathfinder.setGoal(null);
-            wandering = false;
-        }
-    }
-});
+// === АВТО-ПЕРЕПОДКЛЮЧЕНИЕ ===
+function scheduleReconnect() {
+    if (reconnectTimer) return;
 
-bot.on('error', (err) => console.log('[!] Ошибка:', err.message));
-bot.on('kicked', (reason) => console.log(`[!] Бота выкинули. Причина: ${reason}`));
-bot.on('end', () => console.log('[!] Соединение потеряно.'));
-bot.on('resourcePack', () => bot.acceptResourcePack());
+    console.log(`[*] Переподключение через ${CONFIG.reconnectDelay / 1000} секунд...`);
+    reconnectTimer = setTimeout(() => {
+        reconnectTimer = null;
+        createNewBot();
+    }, CONFIG.reconnectDelay);
+}
+
+// === ЗАПУСК ===
+createNewBot();
 
 process.on('SIGINT', () => {
     console.log('\n[*] Отключаю бота...');
-    bot.quit('Бот выключен');
+    if (bot) bot.quit('Бот выключен');
     setTimeout(() => process.exit(0), 1000);
 });
 
